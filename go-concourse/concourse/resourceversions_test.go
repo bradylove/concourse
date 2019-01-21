@@ -414,21 +414,6 @@ var _ = Describe("ATC Handler Resource Versions", func() {
 			})
 		})
 
-		Context("when the resource exists but the version doesn't", func() {
-			BeforeEach(func() {
-				expectedStatus = http.StatusBadRequest
-			})
-
-			It("calls the pin resource and returns an error", func() {
-				Expect(func() {
-					pinned, err := team.PinResourceVersion(pipelineName, resourceName, resourceVersionID)
-					Expect(err).To(HaveOccurred())
-					Expect(pinned).To(BeFalse())
-				}).To(Change(func() int {
-					return len(atcServer.ReceivedRequests())
-				}).By(1))
-			})
-		})
 
 		Context("when the pin resource call fails", func() {
 			BeforeEach(func() {
