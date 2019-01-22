@@ -708,6 +708,13 @@ var _ = Describe("Resource", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 			resID = resConf.ID()
+
+			//TODO: when a method is added to the Resource interface
+			//for setting the pin comment, use it here. this is a stopgap
+			_, err = dbConn.Exec(`
+			UPDATE resources SET pin_comment = 'foo' WHERE id = $1
+			`, resource.ID())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		Context("when we use an invalid version id (does not exist)", func() {
@@ -759,7 +766,12 @@ var _ = Describe("Resource", func() {
 						Expect(resource.APIPinnedVersion()).To(BeNil())
 						Expect(resource.CurrentPinnedVersion()).To(BeNil())
 					})
+
+					It("unsets the pin comment", func() {
+						Expect(resource.PinComment()).To(BeEmpty())
+					})
 				})
+
 			})
 		})
 
