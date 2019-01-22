@@ -36,6 +36,14 @@ func (e ErrVolumeMarkCreatedFailed) Error() string {
 	return fmt.Sprintf("failed to mark volume as created %s", e.Handle)
 }
 
+type ErrVolumeMarkAttachedFailed struct {
+	Handle string
+}
+
+func (e ErrVolumeMarkAttachedFailed) Error() string {
+	return fmt.Sprintf("failed to mark volume as attached %s", e.Handle)
+}
+
 type VolumeState string
 
 const (
@@ -43,6 +51,7 @@ const (
 	VolumeStateCreated    VolumeState = "created"
 	VolumeStateDestroying VolumeState = "destroying"
 	VolumeStateFailed     VolumeState = "failed"
+	VolumeStateAttached   VolumeState = "attached"
 )
 
 type VolumeType string
@@ -147,6 +156,7 @@ type CreatedVolume interface {
 	TeamID() int
 	CreateChildForContainer(CreatingContainer, string) (CreatingVolume, error)
 	Destroying() (DestroyingVolume, error)
+	Attach() (AttachedVolume, error)
 	WorkerName() string
 	InitializeResourceCache(UsedResourceCache) error
 	InitializeTaskCache(int, string, string) error
@@ -511,6 +521,432 @@ func (volume *createdVolume) CreateChildForContainer(container CreatingContainer
 }
 
 func (volume *createdVolume) Destroying() (DestroyingVolume, error) {
+	err := volumeStateTransition(
+		volume.id,
+		volume.conn,
+		VolumeStateCreated,
+		VolumeStateDestroying,
+	)
+	if err != nil {
+		if err == ErrVolumeStateTransitionFailed {
+			return nil, ErrVolumeMarkStateFailed{VolumeStateDestroying}
+
+		}
+
+		if pqErr, ok := err.(*pq.Error); ok &&
+			pqErr.Code.Name() == pqFKeyViolationErrCode &&
+			pqErr.Constraint == "volumes_parent_id_fkey" {
+			return nil, ErrVolumeCannotBeDestroyedWithChildrenPresent
+		}
+
+		return nil, err
+	}
+
+	return &destroyingVolume{
+		id:         volume.id,
+		workerName: volume.workerName,
+		handle:     volume.handle,
+		conn:       volume.conn,
+	}, nil
+}
+
+func (volume *createdVolume) Attach() (AttachedVolume, error) {
+	err := volumeStateTransition(
+		volume.id,
+		volume.conn,
+		VolumeStateCreated,
+		VolumeStateAttached,
+	)
+
+	if err != nil {
+		if err == ErrVolumeStateTransitionFailed {
+			return nil, ErrVolumeMarkAttachedFailed{Handle: volume.handle}
+		}
+		return nil, err
+	}
+
+	return &attachedVolume{
+		id:                       volume.id,
+		workerName:               volume.workerName,
+		typ:                      volume.typ,
+		handle:                   volume.handle,
+		path:                     volume.path,
+		teamID:                   volume.teamID,
+		conn:                     volume.conn,
+		containerHandle:          volume.containerHandle,
+		parentHandle:             volume.parentHandle,
+		resourceCacheID:          volume.resourceCacheID,
+		workerBaseResourceTypeID: volume.workerBaseResourceTypeID,
+		workerTaskCacheID:        volume.workerTaskCacheID,
+		workerResourceCertsID:    volume.workerResourceCertsID,
+	}, nil
+}
+
+type AttachedVolume interface {
+	Handle() string
+	Path() string
+	Type() VolumeType
+	TeamID() int
+	CreateChildForContainer(CreatingContainer, string) (CreatingVolume, error)
+	Destroying() (DestroyingVolume, error)
+	WorkerName() string
+	InitializeResourceCache(UsedResourceCache) error
+	InitializeTaskCache(int, string, string) error
+	ContainerHandle() string
+	ParentHandle() string
+	ResourceType() (*VolumeResourceType, error)
+	BaseResourceType() (*UsedWorkerBaseResourceType, error)
+	TaskIdentifier() (string, string, string, error)
+}
+
+type attachedVolume struct {
+	id                       int
+	workerName               string
+	handle                   string
+	path                     string
+	teamID                   int
+	typ                      VolumeType
+	containerHandle          string
+	parentHandle             string
+	resourceCacheID          int
+	workerBaseResourceTypeID int
+	workerTaskCacheID        int
+	workerResourceCertsID    int
+	conn                     Conn
+}
+
+func (volume *attachedVolume) Handle() string          { return volume.handle }
+func (volume *attachedVolume) Path() string            { return volume.path }
+func (volume *attachedVolume) WorkerName() string      { return volume.workerName }
+func (volume *attachedVolume) Type() VolumeType        { return volume.typ }
+func (volume *attachedVolume) TeamID() int             { return volume.teamID }
+func (volume *attachedVolume) ContainerHandle() string { return volume.containerHandle }
+func (volume *attachedVolume) ParentHandle() string    { return volume.parentHandle }
+
+func (volume *attachedVolume) ResourceType() (*VolumeResourceType, error) {
+	if volume.resourceCacheID == 0 {
+		return nil, nil
+	}
+
+	return volume.findVolumeResourceTypeByCacheID(volume.resourceCacheID)
+}
+
+func (volume *attachedVolume) BaseResourceType() (*UsedWorkerBaseResourceType, error) {
+	if volume.workerBaseResourceTypeID == 0 {
+		return nil, nil
+	}
+
+	return volume.findWorkerBaseResourceTypeByID(volume.workerBaseResourceTypeID)
+}
+
+func (volume *attachedVolume) TaskIdentifier() (string, string, string, error) {
+	if volume.workerTaskCacheID == 0 {
+		return "", "", "", nil
+	}
+
+	var pipelineName string
+	var jobName string
+	var stepName string
+
+	err := psql.Select("p.name, j.name, wtc.step_name").
+		From("worker_task_caches wtc").
+		LeftJoin("jobs j ON j.id = wtc.job_id").
+		LeftJoin("pipelines p ON p.id = j.pipeline_id").
+		Where(sq.Eq{
+			"wtc.id": volume.workerTaskCacheID,
+		}).
+		RunWith(volume.conn).
+		QueryRow().
+		Scan(&pipelineName, &jobName, &stepName)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	return pipelineName, jobName, stepName, nil
+}
+
+func (volume *attachedVolume) findVolumeResourceTypeByCacheID(resourceCacheID int) (*VolumeResourceType, error) {
+	var versionString []byte
+	var sqBaseResourceTypeID sql.NullInt64
+	var sqResourceCacheID sql.NullInt64
+
+	err := psql.Select("rc.version, rcfg.base_resource_type_id, rcfg.resource_cache_id").
+		From("resource_caches rc").
+		LeftJoin("resource_configs rcfg ON rcfg.id = rc.resource_config_id").
+		Where(sq.Eq{
+			"rc.id": resourceCacheID,
+		}).
+		RunWith(volume.conn).
+		QueryRow().
+		Scan(&versionString, &sqBaseResourceTypeID, &sqResourceCacheID)
+	if err != nil {
+		return nil, err
+	}
+
+	var version atc.Version
+	err = json.Unmarshal(versionString, &version)
+	if err != nil {
+		return nil, err
+	}
+
+	if sqBaseResourceTypeID.Valid {
+		workerBaseResourceType, err := volume.findWorkerBaseResourceTypeByBaseResourceTypeID(int(sqBaseResourceTypeID.Int64))
+		if err != nil {
+			return nil, err
+		}
+
+		return &VolumeResourceType{
+			WorkerBaseResourceType: workerBaseResourceType,
+			Version:                version,
+		}, nil
+	}
+
+	if sqResourceCacheID.Valid {
+		resourceType, err := volume.findVolumeResourceTypeByCacheID(int(sqResourceCacheID.Int64))
+		if err != nil {
+			return nil, err
+		}
+
+		return &VolumeResourceType{
+			ResourceType: resourceType,
+			Version:      version,
+		}, nil
+	}
+
+	return nil, ErrInvalidResourceCache
+}
+
+func (volume *attachedVolume) findWorkerBaseResourceTypeByID(workerBaseResourceTypeID int) (*UsedWorkerBaseResourceType, error) {
+	var name string
+	var version string
+
+	err := psql.Select("brt.name, wbrt.version").
+		From("worker_base_resource_types wbrt").
+		LeftJoin("base_resource_types brt ON brt.id = wbrt.base_resource_type_id").
+		Where(sq.Eq{
+			"wbrt.id":          workerBaseResourceTypeID,
+			"wbrt.worker_name": volume.workerName,
+		}).
+		RunWith(volume.conn).
+		QueryRow().
+		Scan(&name, &version)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UsedWorkerBaseResourceType{
+		ID:         workerBaseResourceTypeID,
+		Name:       name,
+		Version:    version,
+		WorkerName: volume.workerName,
+	}, nil
+}
+
+func (volume *attachedVolume) findWorkerBaseResourceTypeByBaseResourceTypeID(baseResourceTypeID int) (*UsedWorkerBaseResourceType, error) {
+	var id int
+	var name string
+	var version string
+
+	err := psql.Select("wbrt.id, brt.name, wbrt.version").
+		From("worker_base_resource_types wbrt").
+		LeftJoin("base_resource_types brt ON brt.id = wbrt.base_resource_type_id").
+		Where(sq.Eq{
+			"brt.id":           baseResourceTypeID,
+			"wbrt.worker_name": volume.workerName,
+		}).
+		RunWith(volume.conn).
+		QueryRow().
+		Scan(&id, &name, &version)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UsedWorkerBaseResourceType{
+		ID:         id,
+		Name:       name,
+		Version:    version,
+		WorkerName: volume.workerName,
+	}, nil
+}
+
+func (volume *attachedVolume) InitializeResourceCache(resourceCache UsedResourceCache) error {
+	tx, err := volume.conn.Begin()
+	if err != nil {
+		return err
+	}
+
+	defer tx.Rollback()
+
+	workerResourceCache, err := WorkerResourceCache{
+		WorkerName:    volume.WorkerName(),
+		ResourceCache: resourceCache,
+	}.FindOrCreate(tx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := psql.Update("volumes").
+		Set("worker_resource_cache_id", workerResourceCache.ID).
+		Set("team_id", nil).
+		Where(sq.Eq{"id": volume.id}).
+		RunWith(tx).
+		Exec()
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code.Name() == pqUniqueViolationErrCode {
+			// another volume was 'blessed' as the cache volume - leave this one
+			// owned by the container so it just expires when the container is GCed
+			return nil
+		}
+
+		return err
+	}
+
+	affected, err := rows.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if affected == 0 {
+		return ErrVolumeMissing
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
+	volume.resourceCacheID = resourceCache.ID()
+	volume.typ = VolumeTypeResource
+
+	return nil
+}
+
+func (volume *attachedVolume) InitializeTaskCache(jobID int, stepName string, path string) error {
+	tx, err := volume.conn.Begin()
+	if err != nil {
+		return err
+	}
+
+	defer Rollback(tx)
+
+	usedWorkerTaskCache, err := WorkerTaskCache{
+		JobID:      jobID,
+		StepName:   stepName,
+		WorkerName: volume.WorkerName(),
+		Path:       path,
+	}.FindOrCreate(tx)
+	if err != nil {
+		return err
+	}
+
+	// release other old volumes for gc
+	_, err = psql.Update("volumes").
+		Set("worker_task_cache_id", nil).
+		Where(sq.Eq{"worker_task_cache_id": usedWorkerTaskCache.ID}).
+		RunWith(tx).
+		Exec()
+	if err != nil {
+		return err
+	}
+
+	rows, err := psql.Update("volumes").
+		Set("worker_task_cache_id", usedWorkerTaskCache.ID).
+		Where(sq.Eq{"id": volume.id}).
+		RunWith(tx).
+		Exec()
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code.Name() == pqUniqueViolationErrCode {
+			// another volume was 'blessed' as the cache volume - leave this one
+			// owned by the container so it just expires when the container is GCed
+			return nil
+		}
+
+		return err
+	}
+
+	affected, err := rows.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if affected == 0 {
+		return ErrVolumeMissing
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (volume *attachedVolume) CreateChildForContainer(container CreatingContainer, mountPath string) (CreatingVolume, error) {
+	tx, err := volume.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	defer Rollback(tx)
+
+	handle, err := uuid.NewV4()
+	if err != nil {
+		return nil, err
+	}
+
+	columnNames := []string{
+		"worker_name",
+		"parent_id",
+		"parent_state",
+		"handle",
+		"container_id",
+		"path",
+	}
+	columnValues := []interface{}{
+		volume.workerName,
+		volume.id,
+		VolumeStateCreated,
+		handle.String(),
+		container.ID(),
+		mountPath,
+	}
+
+	if volume.teamID != 0 {
+		columnNames = append(columnNames, "team_id")
+		columnValues = append(columnValues, volume.teamID)
+	}
+
+	var volumeID int
+	err = psql.Insert("volumes").
+		Columns(columnNames...).
+		Values(columnValues...).
+		Suffix("RETURNING id").
+		RunWith(tx).
+		QueryRow().
+		Scan(&volumeID)
+	if err != nil {
+		return nil, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return nil, err
+	}
+
+	return &creatingVolume{
+		id:              volumeID,
+		workerName:      volume.workerName,
+		handle:          handle.String(),
+		path:            mountPath,
+		teamID:          volume.teamID,
+		typ:             VolumeTypeContainer,
+		containerHandle: container.Handle(),
+		parentHandle:    volume.Handle(),
+		conn:            volume.conn,
+	}, nil
+}
+
+func (volume *attachedVolume) Destroying() (DestroyingVolume, error) {
 	err := volumeStateTransition(
 		volume.id,
 		volume.conn,

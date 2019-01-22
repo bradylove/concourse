@@ -8,6 +8,18 @@ import (
 )
 
 type FakeCreatedVolume struct {
+	AttachStub        func() (db.AttachedVolume, error)
+	attachMutex       sync.RWMutex
+	attachArgsForCall []struct {
+	}
+	attachReturns struct {
+		result1 db.AttachedVolume
+		result2 error
+	}
+	attachReturnsOnCall map[int]struct {
+		result1 db.AttachedVolume
+		result2 error
+	}
 	BaseResourceTypeStub        func() (*db.UsedWorkerBaseResourceType, error)
 	baseResourceTypeMutex       sync.RWMutex
 	baseResourceTypeArgsForCall []struct {
@@ -170,6 +182,61 @@ type FakeCreatedVolume struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeCreatedVolume) Attach() (db.AttachedVolume, error) {
+	fake.attachMutex.Lock()
+	ret, specificReturn := fake.attachReturnsOnCall[len(fake.attachArgsForCall)]
+	fake.attachArgsForCall = append(fake.attachArgsForCall, struct {
+	}{})
+	fake.recordInvocation("Attach", []interface{}{})
+	fake.attachMutex.Unlock()
+	if fake.AttachStub != nil {
+		return fake.AttachStub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	fakeReturns := fake.attachReturns
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeCreatedVolume) AttachCallCount() int {
+	fake.attachMutex.RLock()
+	defer fake.attachMutex.RUnlock()
+	return len(fake.attachArgsForCall)
+}
+
+func (fake *FakeCreatedVolume) AttachCalls(stub func() (db.AttachedVolume, error)) {
+	fake.attachMutex.Lock()
+	defer fake.attachMutex.Unlock()
+	fake.AttachStub = stub
+}
+
+func (fake *FakeCreatedVolume) AttachReturns(result1 db.AttachedVolume, result2 error) {
+	fake.attachMutex.Lock()
+	defer fake.attachMutex.Unlock()
+	fake.AttachStub = nil
+	fake.attachReturns = struct {
+		result1 db.AttachedVolume
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeCreatedVolume) AttachReturnsOnCall(i int, result1 db.AttachedVolume, result2 error) {
+	fake.attachMutex.Lock()
+	defer fake.attachMutex.Unlock()
+	fake.AttachStub = nil
+	if fake.attachReturnsOnCall == nil {
+		fake.attachReturnsOnCall = make(map[int]struct {
+			result1 db.AttachedVolume
+			result2 error
+		})
+	}
+	fake.attachReturnsOnCall[i] = struct {
+		result1 db.AttachedVolume
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeCreatedVolume) BaseResourceType() (*db.UsedWorkerBaseResourceType, error) {
@@ -951,6 +1018,8 @@ func (fake *FakeCreatedVolume) WorkerNameReturnsOnCall(i int, result1 string) {
 func (fake *FakeCreatedVolume) Invocations() map[string][][]interface{} {
 	fake.invocationsMutex.RLock()
 	defer fake.invocationsMutex.RUnlock()
+	fake.attachMutex.RLock()
+	defer fake.attachMutex.RUnlock()
 	fake.baseResourceTypeMutex.RLock()
 	defer fake.baseResourceTypeMutex.RUnlock()
 	fake.containerHandleMutex.RLock()

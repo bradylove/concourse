@@ -178,6 +178,57 @@ var _ = Describe("Volume", func() {
 		})
 	})
 
+	FDescribe("createdVolume.Attached", func() {
+		var (
+			creatingVolume db.CreatingVolume
+			createdVolume db.CreatedVolume
+			attachErr      error
+			err      error
+		)
+
+		BeforeEach(func() {
+			creatingVolume, err = volumeRepository.CreateContainerVolume(defaultTeam.ID(), defaultWorker.Name(), defaultCreatingContainer, "/path/to/volume")
+			Expect(err).ToNot(HaveOccurred())
+			createdVolume, err = creatingVolume.Created()
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		JustBeforeEach(func() {
+			_,  attachErr = createdVolume.Attach()
+		})
+
+		Describe("the database query fails", func() {
+			Context("when the volume is not in created state", func() {
+				BeforeEach(func() {
+					_, err = createdVolume.Destroying()
+					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("returns the correct error", func() {
+					Expect(attachErr).To(HaveOccurred())
+					Expect(attachErr).To(Equal(db.ErrVolumeMarkAttachedFailed{Handle: createdVolume.Handle()}))
+				})
+			})
+
+			Context("there is no such id in the table", func() {
+				BeforeEach(func() {
+					vd, err := createdVolume.Destroying()
+					Expect(err).ToNot(HaveOccurred())
+
+					deleted, err := vd.Destroy()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(deleted).To(BeTrue())
+				})
+
+				It("returns the correct error", func() {
+					Expect(attachErr).To(HaveOccurred())
+					Expect(attachErr).To(Equal(db.ErrVolumeMarkAttachedFailed{Handle: createdVolume.Handle()}))
+				})
+			})
+		})
+
+	})
+
 	Describe("createdVolume.InitializeResourceCache", func() {
 		var createdVolume db.CreatedVolume
 		var resourceCache db.UsedResourceCache
@@ -238,7 +289,7 @@ var _ = Describe("Volume", func() {
 			Expect(found).To(BeTrue())
 		})
 
-		Context("when there's already an initialized resource cache on the same worker", func() {
+		FContext("when there's already an initialized resource cache on the same worker", func() {
 			It("leaves the volume owned by the the container", func() {
 				creatingContainer, err := defaultWorker.CreateContainer(db.NewBuildStepContainerOwner(build.ID(), "some-plan", defaultTeam.ID()), db.ContainerMetadata{
 					Type:     "get",
