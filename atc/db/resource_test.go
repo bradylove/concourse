@@ -710,7 +710,7 @@ var _ = Describe("Resource", func() {
 			resID = resConf.ID()
 		})
 
-		FContext("when we use an invalid version id (does not exist)", func() {
+		Context("when we use an invalid version id (does not exist)", func() {
 			var (
 				pinnedVersion atc.Version
 			)
@@ -728,7 +728,7 @@ var _ = Describe("Resource", func() {
 			})
 		})
 
-		FContext("when we use a valid version id", func() {
+		Context("when we use a valid version id", func() {
 			Context("when we pin a resource to a version", func() {
 				BeforeEach(func() {
 					found, err := resource.PinVersion(resID)
