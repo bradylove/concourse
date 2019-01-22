@@ -16,8 +16,38 @@ import (
 
 var _ = Describe("Fly CLI", func() {
 	Describe("pin-resource-version", func() {
+		var (
+			expectedStatus    int
+			path              string
+			err               error
+			teamName          = "main"
+			pipelineName      = "pipeline"
+			resourceName      = "resource"
+			resourceVersionID = "42"
+			pipelineResource  = fmt.Sprintf("%s/%s", pipelineName, resourceName)
+		)
+
+		BeforeEach(func() {
+			path, err = atc.Routes.CreatePathForRoute(atc.PinResourceVersion, rata.Params{
+				"pipeline_name":              pipelineName,
+				"team_name":                  teamName,
+				"resource_name":              resourceName,
+				"resource_config_version_id": resourceVersionID,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		JustBeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", path),
+					ghttp.RespondWith(expectedStatus, nil),
+				),
+			)
+		})
+
 		Context("make sure the command exists", func() {
-			FIt("calls the pin-resource-version command", func() {
+			It("calls the pin-resource-version command", func() {
 				flyCmd := exec.Command(flyPath, "pin-resource-version")
 				sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 
@@ -28,96 +58,21 @@ var _ = Describe("Fly CLI", func() {
 			})
 		})
 
-		FContext("when the resource is specified", func() {
-			var (
-				expectedStatus    int
-				path              string
-				err               error
-				teamName          = "main"
-				pipelineName      = "pipeline"
-				resourceName      = "resource"
-				resourceVersionID = "42"
-				pipelineResource  = fmt.Sprintf("%s/%s", pipelineName, resourceName)
-			)
-			fmt.Println(pipelineResource)
-
-			BeforeEach(func() {
-				path, err = atc.Routes.CreatePathForRoute(atc.PinResourceVersion, rata.Params{
-					"pipeline_name": pipelineName,
-					"team_name": teamName,
-					"resource_name": resourceName,
-					"resource_config_version_id": resourceVersionID,
-				})
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			JustBeforeEach(func() {
-				atcServer.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("PUT", path),
-						ghttp.RespondWith(expectedStatus, nil),
-					),
-				)
-			})
-
-			Context("when the resource exists", func() {
-				Context("when the resource version is specified", func() {
-					Context("when the resource version id exists", func() {
-						BeforeEach(func() {
-							expectedStatus = http.StatusOK
-						})
-
-						It("pins the resource version", func() {
-							Expect(func() {
-								flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource, "-i",  resourceVersionID)
-
-								sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-								Expect(err).NotTo(HaveOccurred())
-
-								Eventually(sess).Should(gbytes.Say(fmt.Sprintf("pinned '%s' at version id %s\n", pipelineResource, resourceVersionID)))
-
-								<-sess.Exited
-								Expect(sess.ExitCode()).To(Equal(0))
-							}).To(Change(func() int {
-								return len(atcServer.ReceivedRequests())
-							}).By(2))
-						})
-
+		Context("when the resource is specified", func() {
+			Context("when the resource version id is specified", func() {
+				Context("when the resource and version id exists", func() {
+					BeforeEach(func() {
+						expectedStatus = http.StatusOK
 					})
-					Context("when the resource version id does not exist", func() {
-						BeforeEach(func() {
-							expectedStatus = http.StatusInternalServerError
-						})
 
-						It("", func() {
-							Expect(func() {
-								flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource, "-i",  resourceVersionID)
-
-								sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-								Expect(err).NotTo(HaveOccurred())
-
-								Eventually(sess).Should(gbytes.Say(fmt.Sprintf("pinned '%s' at version id %s\n", pipelineResource, resourceVersionID)))
-
-								<-sess.Exited
-								Expect(sess.ExitCode()).To(Equal(0))
-							}).To(Change(func() int {
-								return len(atcServer.ReceivedRequests())
-							}).By(2))
-						})
-
-					})
-				})
-
-				Context("when the resource version is not specified", func() {
-					It("prints helpful message", func() {
+					It("pins the resource version", func() {
 						Expect(func() {
-							flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource, "-i",  resourceVersionID)
+							flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource, "-i", resourceVersionID)
 
 							sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 							Expect(err).NotTo(HaveOccurred())
 
-							Eventually(sess).Should(gbytes.Say(fmt.Sprintf("could not pin %s at version %s, make sure the resource and version exists\n",
-								pipelineResource, resourceVersionID)))
+							Eventually(sess.Out).Should(gbytes.Say(fmt.Sprintf("pinned '%s' at version id %s\n", pipelineResource, resourceVersionID)))
 
 							<-sess.Exited
 							Expect(sess.ExitCode()).To(Equal(0))
@@ -127,17 +82,66 @@ var _ = Describe("Fly CLI", func() {
 					})
 				})
 
+				Context("when the resource or version id does not exist", func() {
+					BeforeEach(func() {
+						expectedStatus = http.StatusNotFound
+					})
+
+					It("fails to pin", func() {
+						Expect(func() {
+							flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource, "-i", resourceVersionID)
+
+							sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+							Expect(err).NotTo(HaveOccurred())
+
+							Eventually(sess.Err).Should(gbytes.Say(fmt.Sprintf("could not pin %s at version %s, make sure the resource and version exists",
+								pipelineResource, resourceVersionID)))
+
+							<-sess.Exited
+							Expect(sess.ExitCode()).To(Equal(1))
+						}).To(Change(func() int {
+							return len(atcServer.ReceivedRequests())
+						}).By(2))
+					})
+				})
+
+			})
+
+			Context("when the resource version id is not specified", func() {
+				It("errors", func() {
+					Expect(func() {
+						flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version", "-r", pipelineResource)
+
+						sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+						Expect(err).NotTo(HaveOccurred())
+
+						Eventually(sess.Err).Should(gbytes.Say("error:.*-i, --version-id.*not specified"))
+
+						<-sess.Exited
+						Expect(sess.ExitCode()).To(Equal(1))
+					}).To(Change(func() int {
+						return len(atcServer.ReceivedRequests())
+					}).By(0))
+				})
 			})
 		})
 
-		//Context("when the resource is not specified", func() {
-		//	flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-verision", "-r", "bar/baz", "-i", "1")
-		//	sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
-		//
-		//	Expect(err).ToNot(HaveOccurred())
-		//	Eventually(sess.Out).Should(gbytes.Say("resource 'bar/baz' not found"))
-		//
-		//	<-sess.Exited
-		//})
+		Context("when the resource is not specified", func() {
+			It("errors", func() {
+				Expect(func() {
+					flyCmd := exec.Command(flyPath, "-t", targetName, "pin-resource-version")
+
+					sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).NotTo(HaveOccurred())
+
+					Eventually(sess.Err).Should(gbytes.Say("error:.*-r, --resource.*not specified"))
+
+					<-sess.Exited
+					Expect(sess.ExitCode()).To(Equal(1))
+				}).To(Change(func() int {
+					return len(atcServer.ReceivedRequests())
+				}).By(0))
+			})
+		})
 	})
 })

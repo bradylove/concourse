@@ -8,7 +8,7 @@ import (
 )
 
 type PinResourceVersionCommand struct {
-	Resource flaghelpers.ResourceFlag `short:"r" long:"resource" required:"true" value-name:"PIPELINE/RESOURCE" description:"Name of a resource to get versions for"`
+	Resource flaghelpers.ResourceFlag `short:"r" long:"resource" required:"true" value-name:"PIPELINE/RESOURCE" description:"Name of the resource"`
 	ResourceVersionID int `short:"i" long:"version-id" required:"true" description:"ID of the version"`
 }
 
@@ -35,7 +35,7 @@ func (command *PinResourceVersionCommand) Execute([]string) error {
 	if pinned {
 		fmt.Printf("pinned '%s/%s' at version id %d\n", command.Resource.PipelineName, command.Resource.ResourceName, command.ResourceVersionID)
 	} else {
-		displayhelpers.Failf("could not pin %s/%s at version %d, make sure the resource and version exists\n",
+		displayhelpers.Failf("could not pin '%s/%s' at version %d, make sure the resource and version exists\n",
 			command.Resource.PipelineName, command.Resource.ResourceName, command.ResourceVersionID)
 	}
 

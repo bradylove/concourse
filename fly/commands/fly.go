@@ -55,6 +55,7 @@ type FlyCommand struct {
 	ResourceVersions   ResourceVersionsCommand   `command:"resource-versions"       alias:"rvs"  description:"List the versions of a resource"`
 	CheckResource      CheckResourceCommand      `command:"check-resource"          alias:"cr"   description:"Check a resource"`
 	PinResourceVersion PinResourceVersionCommand `command:"pin-resource-version"    alias:"prv"  description:"Pin a version to a resource"`
+	UnpinResource      UnpinResourceCommand      `command:"unpin-resource"          alias:"ur"  description:"Unpin a resource"`
 
 	CheckResourceType CheckResourceTypeCommand `command:"check-resource-type" alias:"crt"  description:"Check a resource-type"`
 
