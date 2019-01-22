@@ -710,34 +710,55 @@ var _ = Describe("Resource", func() {
 			resID = resConf.ID()
 		})
 
-		Context("when we pin a resource to a version", func() {
+		FContext("when we use an invalid version id (does not exist)", func() {
+			var (
+				pinnedVersion atc.Version
+			)
 			BeforeEach(func() {
-				err := resource.PinVersion(resID)
-				Expect(err).ToNot(HaveOccurred())
-
-				found, err := resource.Reload()
-				Expect(found).To(BeTrue())
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("sets the api pinned version", func() {
-				Expect(resource.APIPinnedVersion()).To(Equal(atc.Version{"version": "v1"}))
 				Expect(resource.CurrentPinnedVersion()).To(Equal(resource.APIPinnedVersion()))
+				pinnedVersion = resource.APIPinnedVersion()
 			})
 
-			Context("when we unpin a resource to a version", func() {
+			It("returns not found and does not update anything", func() {
+				found, err := resource.PinVersion(-1)
+				Expect(found).To(BeFalse())
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(resource.APIPinnedVersion()).To(Equal(pinnedVersion))
+			})
+		})
+
+		FContext("when we use a valid version id", func() {
+			Context("when we pin a resource to a version", func() {
 				BeforeEach(func() {
-					err := resource.UnpinVersion()
+					found, err := resource.PinVersion(resID)
+					Expect(found).To(BeTrue())
 					Expect(err).ToNot(HaveOccurred())
 
-					found, err := resource.Reload()
+					found, err = resource.Reload()
 					Expect(found).To(BeTrue())
 					Expect(err).ToNot(HaveOccurred())
 				})
 
-				It("sets the api pinned version to nil", func() {
-					Expect(resource.APIPinnedVersion()).To(BeNil())
-					Expect(resource.CurrentPinnedVersion()).To(BeNil())
+				It("sets the api pinned version", func() {
+					Expect(resource.APIPinnedVersion()).To(Equal(atc.Version{"version": "v1"}))
+					Expect(resource.CurrentPinnedVersion()).To(Equal(resource.APIPinnedVersion()))
+				})
+
+				Context("when we unpin a resource to a version", func() {
+					BeforeEach(func() {
+						err := resource.UnpinVersion()
+						Expect(err).ToNot(HaveOccurred())
+
+						found, err := resource.Reload()
+						Expect(found).To(BeTrue())
+						Expect(err).ToNot(HaveOccurred())
+					})
+
+					It("sets the api pinned version to nil", func() {
+						Expect(resource.APIPinnedVersion()).To(BeNil())
+						Expect(resource.CurrentPinnedVersion()).To(BeNil())
+					})
 				})
 			})
 		})
@@ -774,7 +795,8 @@ var _ = Describe("Resource", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 
-				err = resource.PinVersion(resConf.ID())
+				found, err = resource.PinVersion(resConf.ID())
+				Expect(found).To(BeTrue())
 				Expect(err).ToNot(HaveOccurred())
 
 				found, err = resource.Reload()
